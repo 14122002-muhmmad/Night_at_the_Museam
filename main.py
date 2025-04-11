@@ -79,8 +79,11 @@ def text_to_speech(message):
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
-    with open("audio/audio.flac", "wb") as f:
+    # Save MP3 audio
+    mp3_file_path = "audio/audio.mp3"
+    with open(mp3_file_path, "wb") as f:
         f.write(response.content)
+
 
 # Endpoint: Upload image by URL
 @app.post("/museum/url/")
@@ -98,7 +101,7 @@ async def night_at_the_museum_url(data: ImageURL):
         return {
             "artifact": item,
             "fact": fact,
-            "audio_path": "/audio/audio.flac"
+            "audio_path": "audio/audio.mp3"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
