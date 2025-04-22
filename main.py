@@ -15,16 +15,20 @@ from ultralytics import YOLO
 
 # Load environment variables
 load_dotenv()
-API_KEY = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-if not API_KEY:
+HuggingFaceHub_API_KEY = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+if not HuggingFaceHub_API_KEY:
     raise EnvironmentError("Missing HUGGINGFACEHUB_API_TOKEN in environment.")
 
-os.environ["HUGGINGFACEHUB_API_TOKEN"] = API_KEY
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+if not DEEPSEEK_API_KEY:
+    raise EnvironmentError("Missing DEEPSEEK_API_KEY in environment.")
+
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = HuggingFaceHub_API_KEY
+os.environ['DEEPSEEK_API_KEY'] = DEEPSEEK_API_KEY
 
 # Initialize YOLO model
 best_model = YOLO("best_yolov8_model.pt")  # Use relative path for deployment
 
-# FastAPI app setup
 app = FastAPI()
 
 # Enable CORS
@@ -53,26 +57,46 @@ def classify_piece(image_path):
             return "The Berlin Green Head is an ancient Egyptian statue head"
         return final_output
 
-# Generate short fact using HuggingFace LLM
+# Generate short fact using Deepseek
+
 def generate_facts(item):
-    template = """
-    You are a Tour Guide That tells some facts about the {item}.
-    Create a short, engaging, and keyword-rich story for {item} based on the provided context.
-    Strictly adhere to 10–20 words.
-    """
-    prompt = PromptTemplate(template=template, input_variables=["item"])
-    description_llm = LLMChain(
-        llm=HuggingFaceHub(repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-                           model_kwargs={"temperature": random.uniform(0.9, 1), "max_length": 128}),
-        prompt=prompt
-    )
-    description = description_llm.predict(item=item)
-    return description.split('\n')[-1].strip()
+    prompt = f"""
+You are a Tour Guide That tells some facts about the {item}.
+Create a short, engaging, and keyword-rich story for {item} based on the provided context.
+Strictly adhere to 30–50 words without markdowns.
+"""
+
+    url = "https://api.deepseek.com/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "You are a helpful and creative assistant."},
+            {"role": "user", "content": prompt.strip()}
+        ],
+        "temperature": round(random.uniform(0.9, 1.0), 2),
+        "max_tokens": 100
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        result = response.json()
+        reply = result["choices"][0]["message"]["content"]
+        return reply.strip()
+    else:
+        raise Exception(f"DeepSeek API Error: {response.status_code} - {response.text}")
+
 
 # Text-to-speech function
 def text_to_speech(message):
     API_URL = "https://api-inference.huggingface.co/models/espnet/kan-bayashi_ljspeech_vits"
-    headers = {"Authorization": f"Bearer {API_KEY}"}
+    headers = {"Authorization": f"Bearer {HuggingFaceHub_API_KEY}"}
     payload = {"inputs": message}
 
     response = requests.post(API_URL, headers=headers, json=payload)
@@ -85,23 +109,43 @@ def text_to_speech(message):
         f.write(response.content)
 
 
-# Endpoint: Upload image by URL
 @app.post("/museum/url/")
 async def night_at_the_museum_url(data: ImageURL):
     try:
+        print("[INFO] Starting image processing...")
+
+        # Step 1: Download the image
         temp_filename = f"temp_{uuid.uuid4().hex}.jpg"
+        print(f"[INFO] Downloading image from URL: {data.url}")
         urlretrieve(data.url, temp_filename)
+        print(f"[INFO] Image downloaded and saved to: {temp_filename}")
 
+        # Step 2: Classify the piece
+        print("[INFO] Classifying the image...")
         item = classify_piece(temp_filename)
-        fact = generate_facts(item)
-        text_to_speech(fact)
+        print(f"[INFO] Classification result: {item}")
 
+        # Step 3: Generate fact
+        print("[INFO] Generating fact...")
+        fact = generate_facts(item)
+        print(f"[INFO] Generated fact: {fact}")
+
+        # Step 4: Generate audio
+        print("[INFO] Converting fact to speech...")
+        text_to_speech(fact)
+        print("[INFO] Audio saved successfully.")
+
+        # Cleanup
         os.remove(temp_filename)
+        print("[INFO] Temporary image deleted.")
 
         return {
             "artifact": item,
             "fact": fact,
             "audio_path": "audio/audio.mp3"
         }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] An error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
